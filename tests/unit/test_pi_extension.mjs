@@ -200,6 +200,22 @@ test("approves the complete external read scope and passes only canonical paths"
   assert.equal(ctx.calls[0].args.at(-1), join(ctx.root, "rules"));
 });
 
+test("treats local git@ paths as canonical local reads", async (t) => {
+  const ctx = await setup(t, undefined, async () => true);
+  mkdirSync(join(ctx.workspace, "git@notes"));
+  writeFileSync(join(ctx.workspace, "git@notes", "local.md"), "local notes");
+  writeFileSync(join(ctx.root, "private.md"), "synthetic private content");
+  await ctx.scan({ target: "git@notes/local.md" }, { hasUI: false });
+  assert.equal(ctx.calls[0].args[1], join(ctx.workspace, "git@notes", "local.md"));
+  assert.equal(ctx.prompts.length, 0);
+  await ctx.scan({ target: "git@notes/../../private.md" });
+  assert.equal(ctx.calls[1].args[1], join(ctx.root, "private.md"));
+  assert.equal(ctx.prompts.length, 1);
+  assert.match(ctx.prompts[0].message, /Read external scan target:/);
+  assert.ok(ctx.prompts[0].message.includes(JSON.stringify(join(ctx.root, "private.md"))));
+  assert.doesNotMatch(ctx.prompts[0].message, /Fetch remote/);
+});
+
 test("does not launch until approval arrives or after a canceled dialog", async (t) => {
   let approve;
   const ctx = await setup(t, undefined, () => new Promise((resolve) => { approve = resolve; }));

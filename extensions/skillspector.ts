@@ -78,7 +78,7 @@ async function approveScanInputs(
     }
     if (!value) throw new Error("A scan target is required.");
     // Match the CLI's remote forms. A local owner/repo path is not a URL.
-    const remote = !isAbsolute(value) && (value.startsWith("https://") || value.startsWith("git@"));
+    const remote = !isAbsolute(value) && (value.startsWith("https://") || (value.startsWith("git@") && value.endsWith(".git")));
     if (remote) {
       if (field !== "target") throw new Error("YARA rules must be a local directory.");
       prepared[field] = value;
