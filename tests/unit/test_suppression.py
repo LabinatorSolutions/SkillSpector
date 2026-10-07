@@ -207,7 +207,9 @@ def test_transitive_exact_baseline_requires_immutable_source_provenance() -> Non
     with pytest.raises(ValueError, match="source_identity and source_digest"):
         build_baseline_dict(
             [legacy_child],
-            file_cache={source_content_key(legacy_child.source_url, legacy_child.file): SKILL_CONTENT},
+            file_cache={
+                source_content_key(legacy_child.source_url, legacy_child.file): SKILL_CONTENT
+            },
             scanner_version=SCANNER_VERSION,
         )
 
