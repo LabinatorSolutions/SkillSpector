@@ -2416,10 +2416,10 @@ class TestHelpers:
         rules_dir = tmp_path / "rules"
         rules_dir.mkdir()
         outside = tmp_path / "private.yar"
-        outside.write_text("rule external_private_rule { condition: true }")
+        outside.write_text('rule external_private_rule { strings: $a = "Local" condition: $a }')
         include = "../private.yar" if relative else str(outside)
         (rules_dir / "include.yar").write_text(f'include "{include}"')
-        (rules_dir / "good.yar").write_text("rule approved_local_rule { condition: true }")
+        (rules_dir / "good.yar").write_text('rule approved_local_rule { strings: $a = "Local" condition: $a }')
         monkeypatch.chdir(rules_dir)
         monkeypatch.setattr(static_yara, "_rule_cache", None)
         monkeypatch.setattr(static_yara, "_BUILTIN_RULES_DIR", tmp_path / "empty_builtin")
