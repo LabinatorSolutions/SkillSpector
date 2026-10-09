@@ -67,7 +67,16 @@ async function setup(t, exec, confirm = async () => false) {
     scan: (params = {}, context = {}, signal) => tool.execute("scan", { target: "./SKILL.md", ...params }, signal, undefined, {
       cwd: workspace,
       hasUI: true,
-      ui: { async confirm(title, message) { prompts.push({ title, message }); return confirm({ root, workspace }); } },
+      ui: { async confirm(title, message, options) {
+        prompts.push({ title, message });
+        return new Promise((resolve, reject) => {
+          const signal = options?.signal;
+          const abort = () => reject(signal.reason);
+          if (signal?.aborted) return abort();
+          signal?.addEventListener("abort", abort, { once: true });
+          Promise.resolve(confirm({ root, workspace })).then(resolve, reject).finally(() => signal?.removeEventListener("abort", abort));
+        });
+      } },
       ...context,
     }),
   };
@@ -187,7 +196,7 @@ test("requires approval before exposing external targets or YARA rules to the CL
   assert.ok(ctx.prompts[5].message.includes(JSON.stringify(rules)));
 });
 
-test("approves the complete external read scope and passes only canonical paths", async (t) => {
+test("approves canonical external scope and preserves the CLI target symlink policy", async (t) => {
   const ctx = await setup(t, undefined, async () => true);
   writeFileSync(join(ctx.root, "private.md"), "synthetic private content");
   mkdirSync(join(ctx.root, "rules"));
@@ -196,7 +205,7 @@ test("approves the complete external read scope and passes only canonical paths"
   assert.equal(ctx.prompts.length, 1);
   assert.match(ctx.prompts[0].message, /Read external scan target:/);
   assert.match(ctx.prompts[0].message, /Read external YARA rules:/);
-  assert.equal(ctx.calls[0].args[1], join(ctx.root, "private.md"));
+  assert.equal(ctx.calls[0].args[1], join(ctx.workspace, "external/private.md"));
   assert.equal(ctx.calls[0].args.at(-1), join(ctx.root, "rules"));
 });
 
@@ -217,14 +226,12 @@ test("treats local git@ paths as canonical local reads", async (t) => {
 });
 
 test("does not launch until approval arrives or after a canceled dialog", async (t) => {
-  let approve;
-  const ctx = await setup(t, undefined, () => new Promise((resolve) => { approve = resolve; }));
+  const ctx = await setup(t, undefined, () => new Promise(() => {}));
   const controller = new AbortController();
   const scan = ctx.scan({ target: "https://example.test/skill.zip" }, {}, controller.signal);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(ctx.calls.length, 0);
   controller.abort();
-  approve(true);
   await assert.rejects(scan, /abort/i);
   assert.equal(ctx.calls.length, 0);
 });
@@ -383,4 +390,43 @@ test("cleans staged reports after operational failure, cancellation, and missing
       assert.deepEqual(readdirSync(ctx.workspace), ["SKILL.md", "report.txt"]);
     });
   }
+});
+
+
+test("rejects external headless paths uniformly before checking their existence", async (t) => {
+  const ctx = await setup(t);
+  writeFileSync(join(ctx.root, "existing.md"), "private");
+  for (const target of ["../existing.md", "../missing.md"]) {
+    await assert.rejects(ctx.scan({ target }, { hasUI: false }), /require user confirmation/);
+  }
+  assert.equal(ctx.calls.length, 0);
+});
+
+test("rejects invalid output and pre-canceled calls before showing a dialog", async (t) => {
+  const ctx = await setup(t);
+  await assert.rejects(ctx.scan({ target: "https://example.test/skill", output: "../report.json" }), /within the current workspace/);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(ctx.scan({ target: "https://example.test/skill" }, {}, controller.signal), /abort/i);
+  assert.equal(ctx.prompts.length, 0);
+  assert.equal(ctx.calls.length, 0);
+});
+
+test("rejects a workspace swapped while a remote target awaits approval", async (t) => {
+  const ctx = await setup(t, undefined, async ({ root, workspace }) => {
+    renameSync(workspace, join(root, "original-workspace"));
+    symlinkSync(root, workspace);
+    return true;
+  });
+  await assert.rejects(ctx.scan({ target: "https://example.test/skill" }), /input path changed/);
+  assert.equal(ctx.calls.length, 0);
+});
+
+test("gives a clear error for missing workspace targets or rule directories", async (t) => {
+  const ctx = await setup(t);
+  for (const params of [{ target: "missing.md" }, { yaraRulesDir: "missing-rules" }]) {
+    await assert.rejects(ctx.scan(params), /Could not resolve/);
+  }
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.prompts.length, 0);
 });

@@ -66,10 +66,25 @@ async function approveScanInputs(
   ctx: ExtensionContext,
   signal?: AbortSignal,
 ): Promise<SkillSpectorScanParams> {
+  signal?.throwIfAborted();
   const workspace = realpathSync(ctx.cwd);
   const prepared = { ...params };
-  const localPaths: Array<{ input: string; resolved: string }> = [];
+  const localPaths: Array<{ field: "target" | "yaraRulesDir"; input: string; resolved?: string }> = [];
   const requests: string[] = [];
+  const readRequest = (field: string, path: string) =>
+    `Read external ${field === "target" ? "scan target" : "YARA rules"}: ${JSON.stringify(path)}`;
+  async function approve(requests: string[]): Promise<void> {
+    if (!requests.length) return;
+    signal?.throwIfAborted();
+    if (!ctx.hasUI) throw new Error("External scan inputs require user confirmation in an interactive or RPC session.");
+    const approved = await ctx.ui.confirm(
+      "Allow SkillSpector external access?",
+      `${requests.join("\n")}\n\nScanned content and matching rule text can appear in the agent conversation.`,
+      { signal },
+    );
+    signal?.throwIfAborted();
+    if (!approved) throw new Error("SkillSpector external access was not approved.");
+  }
   for (const field of ["target", "yaraRulesDir"] as const) {
     const value = params[field]?.trim();
     if (field === "yaraRulesDir" && !value) {
@@ -85,26 +100,40 @@ async function approveScanInputs(
       requests.push(`Fetch remote scan target: ${JSON.stringify(value)}`);
     } else {
       const input = resolve(ctx.cwd, value);
-      const resolved = realpathSync(input);
-      prepared[field] = resolved;
-      localPaths.push({ input, resolved });
-      if (!isWithin(workspace, resolved)) {
-        requests.push(`Read external ${field === "target" ? "scan target" : "YARA rules"}: ${JSON.stringify(resolved)}`);
+      // Ask before resolving external paths, which can probe the host or access
+      // a Windows network share even when the file is never opened.
+      if (!isWithin(resolve(ctx.cwd), input)) {
+        localPaths.push({ field, input });
+        requests.push(readRequest(field, input));
+      } else {
+        let resolved: string;
+        try {
+          resolved = realpathSync(input);
+        } catch {
+          throw new Error(`Could not resolve ${field === "target" ? "scan target" : "YARA rules directory"}. Check that it exists and is accessible.`);
+        }
+        localPaths.push({ field, input, resolved });
+        if (!isWithin(workspace, resolved)) requests.push(readRequest(field, resolved));
       }
     }
   }
-  signal?.throwIfAborted();
-  if (requests.length) {
-    if (!ctx.hasUI) throw new Error("External scan inputs require user confirmation in an interactive or RPC session.");
-    const approved = await ctx.ui.confirm(
-      "Allow SkillSpector external access?",
-      `${requests.join("\n")}\n\nScanned content and matching rule text can appear in the agent conversation.`,
-    );
-    if (!approved) throw new Error("SkillSpector external access was not approved.");
+  await approve(requests);
+  const aliasRequests: string[] = [];
+  for (const path of localPaths) {
+    try {
+      path.resolved ??= realpathSync(path.input);
+    } catch {
+      throw new Error(`Could not resolve ${path.field === "target" ? "scan target" : "YARA rules directory"}. Check that it exists and is accessible.`);
+    }
+    if (!isWithin(resolve(ctx.cwd), path.input) && !isWithin(workspace, path.resolved) && path.resolved !== path.input) {
+      aliasRequests.push(readRequest(path.field, path.resolved));
+    }
+    // Keep the original target path so the CLI can enforce its no-symlink
+    // input policy. YARA directories are canonicalised by the CLI too.
+    prepared[path.field] = path.field === "target" ? path.input : path.resolved;
   }
+  await approve(aliasRequests);
   signal?.throwIfAborted();
-  // The dialog can wait indefinitely. Recheck aliases before launching, and
-  // pass canonical paths to the CLI, whose file reads use no-follow handles.
   if (realpathSync(ctx.cwd) !== workspace || localPaths.some(({ input, resolved }) => realpathSync(input) !== resolved)) {
     throw new Error("Scan input path changed while awaiting confirmation.");
   }
@@ -170,8 +199,8 @@ export default function (pi: ExtensionAPI) {
     parameters: scanSchema,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const bin = findSkillSpectorBin();
-      const prepared = await approveScanInputs(params, ctx, signal);
       const outputPath = reportOutputPath(ctx.cwd, params.output);
+      const prepared = await approveScanInputs(params, ctx, signal);
       const reportDir = outputPath ? mkdtempSync(join(tmpdir(), "skillspector-report-")) : undefined;
       const reportPath = reportDir ? join(reportDir, "report") : undefined;
       try {
