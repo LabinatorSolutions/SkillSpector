@@ -244,6 +244,13 @@ def test_transitive_fingerprint_does_not_borrow_lookalike_local_path(delimiter: 
         )
 
 
+def test_root_lookup_does_not_normalize_a_transitive_content_key() -> None:
+    from skillspector.suppression import _component_content
+
+    key = source_content_key("scope", r"..\..\..\x")
+    assert _component_content({key: "remote content"}, './x"]') is None
+
+
 def test_source_content_key_preserves_scope_and_exact_path() -> None:
     assert source_content_key("a/b", "c") != source_content_key("a", "b/c")
     assert source_content_key("scope", "a\\b") != source_content_key("scope", "a/b")

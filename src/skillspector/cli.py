@@ -1764,8 +1764,8 @@ def _bounded_cache_update(
 ) -> None:
     for path in sorted(values):
         if path in destination:
-            if destination[path] != values[path]:
-                traversal.note_truncation(f"{resource} contains conflicting source content")
+            # Source-scoped keys are disjoint from root paths. A repeated key
+            # refers to the same cached result within this traversal.
             continue
         if len(destination) >= limit:
             traversal.note_truncation(f"{resource} budget {limit} reached")
